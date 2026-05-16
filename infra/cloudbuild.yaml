@@ -1,0 +1,79 @@
+# Substitutions: _REGION, _AR_REPO, _CLOUD_RUN_SVC, _FRONTEND_BUCKET, _CLOUDSQL_CONN, _DB_PASS, _DATA_BUCKET, _RUN_HASH.
+
+steps:
+- name: gcr.io/cloud-builders/docker
+  id: build-backend
+  args:
+  - build
+  - -t
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/backend:$SHORT_SHA
+  - -t
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/backend:latest
+  - ./backend
+
+- name: gcr.io/cloud-builders/docker
+  id: push-backend
+  args: [push, --all-tags, "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/backend"]
+  waitFor: [build-backend]
+
+- name: gcr.io/google.com/cloudsdktool/cloud-sdk
+  id: deploy-backend
+  entrypoint: gcloud
+  args:
+  - run
+  - deploy
+  - ${_CLOUD_RUN_SVC}
+  - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/backend:$SHORT_SHA
+  - --region=${_REGION}
+  - --platform=managed
+  - --allow-unauthenticated
+  - --min-instances=0
+  - --max-instances=5
+  - --memory=512Mi
+  - --cpu=1
+  - --concurrency=80
+  - --add-cloudsql-instances=${_CLOUDSQL_CONN}
+  - --set-env-vars=DATABASE_URL=postgresql+psycopg2://hdbsim:${_DB_PASS}@/hdbsim?host=/cloudsql/${_CLOUDSQL_CONN}
+  - --set-env-vars=BUILDINGS_PATH=gs://${_DATA_BUCKET}/buildings.geojson
+  - --set-env-vars=BOUNDARY_PATH=gs://${_DATA_BUCKET}/sg_boundary.geojson
+  waitFor: [push-backend]
+
+- name: node:20-alpine
+  id: build-frontend
+  entrypoint: sh
+  args:
+  - -c
+  - |
+    cd frontend
+    npm ci
+    VITE_API_BASE="https://${_CLOUD_RUN_SVC}-${_RUN_HASH}.a.run.app" npm run build
+
+- name: gcr.io/google.com/cloudsdktool/cloud-sdk
+  id: deploy-frontend
+  entrypoint: gsutil
+  args:
+  - -m
+  - rsync
+  - -r
+  - -d
+  - frontend/dist
+  - gs://${_FRONTEND_BUCKET}
+  waitFor: [build-frontend]
+
+- name: gcr.io/google.com/cloudsdktool/cloud-sdk
+  id: invalidate-cdn
+  entrypoint: gcloud
+  args:
+  - compute
+  - url-maps
+  - invalidate-cdn-cache
+  - hdb-sim-lb
+  - --path=/*
+  - --async
+  waitFor: [deploy-frontend]
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+
+timeout: 1200s

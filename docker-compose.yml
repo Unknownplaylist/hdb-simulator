@@ -1,0 +1,43 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8080"
+    environment:
+      DATABASE_URL: sqlite:////data/hdb.db
+      BUILDINGS_PATH: /app/data/buildings_sample.geojson
+      BOUNDARY_PATH: /app/data/sg_boundary.geojson
+      CORS_ORIGINS: '["http://localhost:8080","http://localhost:5173"]'
+    volumes:
+      - backend-db:/data
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8080/healthz\")'"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  ingest:
+    build: ./backend
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: sqlite:////data/hdb.db
+    volumes:
+      - backend-db:/data
+    command: ["python", "-m", "scripts.ingest"]
+    restart: "no"
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE: /api
+    ports:
+      - "8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  backend-db:
